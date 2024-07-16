@@ -3,12 +3,12 @@
 import argparse
 import logging
 import natpmp
+import qbittorrentapi
 import queue
 import sys
 import threading
 import time
-import transmission_rpc
-import transmission_rpc.error
+import urllib.parse
 
 
 class PmpThread(threading.Thread):
@@ -42,7 +42,7 @@ class PmpThread(threading.Thread):
             time.sleep(self.lifetime / 2)
 
 
-class TransmissionThread(threading.Thread):
+class qBittorrentThread(threading.Thread):
     def __init__(self, *, client, inq):
         super().__init__()
         self.client = client
@@ -52,10 +52,10 @@ class TransmissionThread(threading.Thread):
         while True:
             public_port = self.inq.get()
             try:
-                self.client.set_session(peer_port=public_port)
-                logging.info(f"Transmission peer port set to {public_port}")
-            except transmission_rpc.error.TransmissionError:
-                logging.exception("Transmission error occurred")
+                self.client.app_set_preferences({"listen_port": public_port})
+                logging.info(f"qBittorrent peer port set to {public_port}")
+            except qbittorrentapi.exceptions.RequestException:
+                logging.exception("qBittorrent error occurred")
                 self.inq.put(public_port)  # retry
                 time.sleep(5)
 
@@ -63,9 +63,9 @@ class TransmissionThread(threading.Thread):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--transmission_url",
+        "--qbittorrent_url",
         required=True,
-        help="URL of the Transmission RPC server, including credentials",
+        help="URL of the qBittorrent web server, including credentials",
     )
     parser.add_argument(
         "--pmp_gateway", required=True, help="IP address of the NAT-PMP Gateway"
@@ -79,7 +79,8 @@ def main():
 
     logging.basicConfig(stream=sys.stderr, level=logging.INFO)
 
-    transmission_client = transmission_rpc.from_url(args.transmission_url)
+    url = urllib.parse.urlparse(args.qbittorrent_url)
+    qbittorrent_client = qbittorrentapi.Client(host=url.geturl(), username=url.username, password=url.password)
 
     port_mapping_changes = queue.Queue()
     pmp_thread = PmpThread(
@@ -87,15 +88,15 @@ def main():
         lifetime=args.pmp_lifetime_secs,
         outq=port_mapping_changes,
     )
-    transmission_thread = TransmissionThread(
-        client=transmission_client, inq=port_mapping_changes
+    qbittorrent_thread = qBittorrentThread(
+        client=qbittorrent_client, inq=port_mapping_changes
     )
 
     pmp_thread.start()
-    transmission_thread.start()
+    qbittorrent_thread.start()
 
     pmp_thread.join()
-    transmission_thread.join()
+    qbittorrent_thread.join()
 
 
 if __name__ == "__main__":
